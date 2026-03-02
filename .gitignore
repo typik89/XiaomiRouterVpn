@@ -1,0 +1,18 @@
+# Android/Gradle
+.gradle/
+.gradle-local/
+.android/
+build/
+*/build/
+
+# IDE
+.idea/
+
+# Local machine config
+local.properties
+
+# Signing keys
+*.jks
+*.keystore
+
+.kotlin/
