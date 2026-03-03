@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -32,9 +36,14 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -43,6 +52,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import ru.typik.mi.router.android.client.model.Vpn
 import ru.typik.mi.router.android.data.SettingsStorage
+import ru.typik.mi.router.android.service.WifiService
 import ru.typik.mi.router.android.ui.AppViewModel
 import ru.typik.mi.router.android.ui.AppViewModelFactory
 import ru.typik.mi.router.android.ui.SettingsUiState
@@ -57,8 +67,17 @@ class MainActivity : ComponentActivity() {
         AppViewModelFactory(SettingsStorage(applicationContext))
     }
 
+    private val wifiService: WifiService by lazy { WifiService(applicationContext) }
+    private var wifiSsid: String? by mutableStateOf(null)
+
+    private val permissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { updateWifiSsid() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestWifiPermissionsIfNeeded()
+        updateWifiSsid()
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             Log.e(LOG_TAG, "Uncaught exception in thread ${thread.name}", error)
@@ -66,14 +85,30 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             MaterialTheme {
-                AppRoot(viewModel)
+                AppRoot(viewModel, wifiSsid)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateWifiSsid()
+    }
+
+    private fun requestWifiPermissionsIfNeeded() {
+        val deniedPermissions = wifiService.getMissingPermissions()
+        if (deniedPermissions.isNotEmpty()) {
+            permissionsLauncher.launch(deniedPermissions.toTypedArray())
+        }
+    }
+
+    private fun updateWifiSsid() {
+        wifiSsid = wifiService.getWifiSSID()
     }
 }
 
 @Composable
-private fun AppRoot(viewModel: AppViewModel) {
+private fun AppRoot(viewModel: AppViewModel, wifiSsid: String?) {
     val navController = rememberNavController()
     val startDestination = if (viewModel.hasSavedSettings()) {
         Screen.Vpn.route
@@ -108,6 +143,7 @@ private fun AppRoot(viewModel: AppViewModel) {
             VpnScreen(
                 navController = navController,
                 state = state,
+                wifiSsid = wifiSsid,
                 onRefresh = viewModel::refreshVpn,
                 onChangeStatus = viewModel::changeVpnStatus
             )
@@ -125,6 +161,8 @@ private fun SettingsScreen(
     onRestore: () -> Unit,
     onSave: () -> Unit
 ) {
+    var passwordVisible by rememberSaveable { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("Настройки подключения") })
@@ -159,7 +197,27 @@ private fun SettingsScreen(
                 value = state.password,
                 onValueChange = onPasswordChange,
                 label = { Text("Пароль") },
-                visualTransformation = PasswordVisualTransformation(),
+                visualTransformation = if (passwordVisible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            imageVector = if (passwordVisible) {
+                                Icons.Filled.VisibilityOff
+                            } else {
+                                Icons.Filled.Visibility
+                            },
+                            contentDescription = if (passwordVisible) {
+                                "Скрыть пароль"
+                            } else {
+                                "Показать пароль"
+                            }
+                        )
+                    }
+                },
                 supportingText = state.passwordError?.let { { Text(it) } },
                 isError = state.passwordError != null,
                 singleLine = true,
@@ -184,6 +242,7 @@ private fun SettingsScreen(
 private fun VpnScreen(
     navController: NavHostController,
     state: VpnUiState,
+    wifiSsid: String?,
     onRefresh: () -> Unit,
     onChangeStatus: (Vpn, Boolean) -> Unit
 ) {
@@ -194,7 +253,28 @@ private fun VpnScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("VPN") },
+                title = {
+                    Column {
+                        Text(text = "VPN", style = MaterialTheme.typography.titleLarge)
+                        if (wifiSsid != null) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Wifi,
+                                    contentDescription = "Wi-Fi",
+                                    tint = Color(0xFF2E7D32)
+                                )
+                                Text(
+                                    text = wifiSsid,
+                                    color = Color(0xFF2E7D32),
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                            }
+                        }
+                    }
+                },
                 actions = {
                     IconButton(onClick = onRefresh, enabled = !state.loading) {
                         Icon(
